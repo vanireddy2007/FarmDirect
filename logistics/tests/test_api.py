@@ -106,6 +106,13 @@ def test_capacity_validation_for_route_optimization():
 
 
 def test_route_optimization_and_retrieval(monkeypatch):
+    async def fake_matrix(*args, **kwargs):
+        return [
+            [0, 1000, 2000],
+            [1000, 0, 1000],
+            [2000, 1000, 0],
+        ]
+
     async def fake_route(*args, **kwargs):
         return {
             'distance_meters': 15000,
@@ -114,6 +121,7 @@ def test_route_optimization_and_retrieval(monkeypatch):
         }
 
     from logistics.app import logistics as logistics_module
+    monkeypatch.setattr(logistics_module.osrm_service, 'get_distance_matrix', fake_matrix)
     monkeypatch.setattr(logistics_module.osrm_service, 'get_route', fake_route)
 
     payload = {
@@ -135,6 +143,51 @@ def test_route_optimization_and_retrieval(monkeypatch):
     get_response = client.get('/api/logistics/routes/ORD-TEST-2')
     assert get_response.status_code == 200
     assert get_response.json()['order_id'] == 'ORD-TEST-2'
+
+
+def test_route_final_osrm_call_uses_optimized_sequence(monkeypatch):
+    matrix = [
+        [0, 100, 10, 100],
+        [100, 0, 10, 10],
+        [10, 10, 0, 100],
+        [100, 10, 100, 0],
+    ]
+    route_calls = []
+
+    async def fake_matrix(coordinates):
+        assert len(coordinates) == 4
+        return matrix
+
+    async def fake_route(coordinates, include_geometry=False):
+        route_calls.append(coordinates)
+        return {'distance_meters': 4000, 'duration_seconds': 240, 'geometry': None}
+
+    from logistics.app import logistics as logistics_module
+    monkeypatch.setattr(logistics_module.osrm_service, 'get_distance_matrix', fake_matrix)
+    monkeypatch.setattr(logistics_module.osrm_service, 'get_route', fake_route)
+
+    response = client.post('/api/logistics/optimize-route', json={
+        'order_id': 'ORD-ROAD-MATRIX',
+        'vehicle_capacity_kg': 1000,
+        'depot': {'lat': 25.0, 'lon': 91.0},
+        'stops': [
+            {'farmer_id': 'F001', 'farmer_name': 'Farmer A', 'quantity_kg': 100, 'lat': 25.01, 'lon': 91.01},
+            {'farmer_id': 'F002', 'farmer_name': 'Farmer B', 'quantity_kg': 100, 'lat': 25.02, 'lon': 91.02},
+            {'farmer_id': 'F003', 'farmer_name': 'Farmer C', 'quantity_kg': 100, 'lat': 25.03, 'lon': 91.03},
+        ],
+    })
+
+    assert response.status_code == 200
+    assert [stop['farmer_id'] for stop in response.json()['optimized_stop_sequence']] == ['F002', 'F001', 'F003']
+    assert route_calls == [[
+        (25.0, 91.0),
+        (25.02, 91.02),
+        (25.01, 91.01),
+        (25.03, 91.03),
+        (25.0, 91.0),
+    ]]
+    assert response.json()['total_road_distance_km'] == 4.0
+    assert response.json()['estimated_travel_time_minutes'] == 4.0
 
 
 def test_unknown_route_returns_404():

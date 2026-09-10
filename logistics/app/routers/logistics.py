@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
 
-from ..logistics import FarmerCostAllocator, OSRMService, RoutingOptimizer, TransportationCostCalculator
+from ..logistics import FarmerCostAllocator, RoutingOptimizer, TransportationCostCalculator, osrm_service
 from ..models import (
     FarmerCostAllocationRequest,
     RouteOptimizationRequest,
@@ -10,7 +10,7 @@ from ..models import (
 )
 
 router = APIRouter(prefix='/api/logistics', tags=['Logistics'])
-optimizer = RoutingOptimizer(OSRMService())
+optimizer = RoutingOptimizer(osrm_service)
 route_store: dict[str, dict] = {}
 
 

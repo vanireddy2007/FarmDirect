@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import httpx
@@ -49,6 +48,32 @@ class OSRMService:
             'geometry': route.get('geometry') if include_geometry else None,
         }
 
+    async def get_distance_matrix(self, coordinates: list[tuple[float, float]]) -> list[list[float]]:
+        """Return the OSRM road-distance matrix for depot and pickup points."""
+        if len(coordinates) < 2:
+            raise ValueError('At least two coordinates are required to compute a distance matrix.')
+        if any(lat < -90 or lat > 90 or lon < -180 or lon > 180 for lat, lon in coordinates):
+            raise ValueError('Invalid coordinates supplied for OSRM routing.')
+
+        points = ';'.join(f'{lon},{lat}' for lat, lon in coordinates)
+        url = f'{self.BASE_URL}/table/v1/driving/{points}?annotations=distance'
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise TimeoutError('OSRM distance matrix request timed out.') from exc
+        except httpx.HTTPError as exc:
+            raise ConnectionError('Unable to reach the OSRM routing service.') from exc
+
+        payload = response.json()
+        distances = payload.get('distances')
+        if not distances or len(distances) != len(coordinates) or any(
+            len(row) != len(coordinates) for row in distances
+        ):
+            raise ValueError('OSRM did not return a valid distance matrix.')
+        return distances
+
 
 class RoutingOptimizer:
     def __init__(self, osrm_service: OSRMService) -> None:
@@ -62,32 +87,17 @@ class RoutingOptimizer:
         if not request.stops:
             raise ValueError('At least one pickup point is required.')
 
-        order_coords = [(request.depot.lat, request.depot.lon)]
-        for stop in request.stops:
-            order_coords.append((stop.lat, stop.lon))
-        order_coords.append((request.depot.lat, request.depot.lon))
+        matrix_coords = [(request.depot.lat, request.depot.lon)]
+        matrix_coords.extend((stop.lat, stop.lon) for stop in request.stops)
+        road_distances = await self.osrm_service.get_distance_matrix(matrix_coords)
 
-        route_data = await self.osrm_service.get_route(order_coords, include_geometry=False)
-        distance_meters = float(route_data['distance_meters'])
-        duration_seconds = float(route_data['duration_seconds'])
-
-        manager = pywrapcp.RoutingIndexManager(len(request.stops) + 1, 1, 0)
+        manager = pywrapcp.RoutingIndexManager(len(matrix_coords), 1, 0)
         routing = pywrapcp.RoutingModel(manager)
 
         def distance_callback(from_index: int, to_index: int) -> int:
             from_node = manager.IndexToNode(from_index)
             to_node = manager.IndexToNode(to_index)
-            if from_node == 0 and to_node == 0:
-                return 0
-            if from_node == 0:
-                return 0
-            if to_node == 0:
-                return 0
-            if from_node == to_node:
-                return 0
-            from_coord = (request.stops[from_node - 1].lat, request.stops[from_node - 1].lon)
-            to_coord = (request.stops[to_node - 1].lat, request.stops[to_node - 1].lon)
-            return int(self._haversine_km(from_coord, to_coord) * 1000)
+            return int(road_distances[from_node][to_node])
 
         transit_index = routing.RegisterTransitCallback(distance_callback)
         routing.SetArcCostEvaluatorOfAllVehicles(transit_index)
@@ -118,6 +128,13 @@ class RoutingOptimizer:
             lon=stop.lon,
         ) for i, stop in enumerate(route_nodes)]
 
+        optimized_coords = [(request.depot.lat, request.depot.lon)]
+        optimized_coords.extend((stop.lat, stop.lon) for stop in route_nodes)
+        optimized_coords.append((request.depot.lat, request.depot.lon))
+        route_data = await self.osrm_service.get_route(optimized_coords, include_geometry=False)
+        distance_meters = float(route_data['distance_meters'])
+        duration_seconds = float(route_data['duration_seconds'])
+
         return RouteResult(
             order_id=request.order_id,
             optimized_stop_sequence=ordered,
@@ -130,17 +147,6 @@ class RoutingOptimizer:
             vehicle_capacity_kg=request.vehicle_capacity_kg,
             route_status='optimized',
         )
-
-    @staticmethod
-    def _haversine_km(point_a: tuple[float, float], point_b: tuple[float, float]) -> float:
-        lat1, lon1 = map(math.radians, point_a)
-        lat2, lon2 = map(math.radians, point_b)
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-        c = 2 * math.asin(math.sqrt(a))
-        return 6371 * c
-
 
 class TransportationCostCalculator:
     @staticmethod
