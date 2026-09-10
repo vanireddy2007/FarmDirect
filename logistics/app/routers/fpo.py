@@ -16,6 +16,33 @@ def get_available_produce(fpo_id: str):
     return {'fpo_id': fpo_id, 'produce': storage.get_available_produce(fpo_id)}
 
 
+@router.get('/{fpo_id}/suitability-scores')
+def get_suitability_scores(
+    fpo_id: str,
+    crop: str,
+    required_quantity_kg: float,
+    reference_latitude: float,
+    reference_longitude: float,
+):
+    if not storage.validate_fpo(fpo_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'FPO {fpo_id} not found.')
+    if required_quantity_kg <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Requested quantity must be greater than zero.')
+
+    return {
+        'fpo_id': fpo_id,
+        'crop': crop,
+        'required_quantity_kg': required_quantity_kg,
+        'candidates': storage.get_suitability_scores(
+            fpo_id,
+            crop,
+            required_quantity_kg,
+            reference_latitude,
+            reference_longitude,
+        ),
+    }
+
+
 @router.post('/{fpo_id}/aggregate')
 def create_aggregation_batch(fpo_id: str, request: AggregationRequest):
     try:

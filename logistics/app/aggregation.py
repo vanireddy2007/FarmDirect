@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 
 from .data import AggregationBatch, INITIAL_LISTINGS
@@ -7,9 +8,182 @@ from .data import AggregationBatch, INITIAL_LISTINGS
 
 class AggregationStore:
     def __init__(self) -> None:
-        self.listings = {listing.listing_id: listing for listing in INITIAL_LISTINGS}
+        self.listings = {
+            listing.listing_id: listing
+            for listing in deepcopy(INITIAL_LISTINGS)
+        }
         self.batches: dict[str, AggregationBatch] = {}
         self.batch_counter = 1
+
+    def score_listing_for_bulk_order(
+        self,
+        listing,
+        required_quantity_kg: float,
+        reference_latitude: float,
+        reference_longitude: float,
+    ) -> float:
+        """Return the weighted suitability score for one compatible listing."""
+        breakdown = self.get_listing_score_breakdown(
+            listing,
+            required_quantity_kg,
+            reference_latitude,
+            reference_longitude,
+        )
+        return breakdown['score']
+
+    @staticmethod
+    def _quality_score(quality: str) -> float | None:
+        """Return a deterministic quality score, or ``None`` for an unknown grade."""
+        quality_scores = {
+            'grade a': 100.0,
+            'a': 100.0,
+            'premium': 100.0,
+            'grade b': 75.0,
+            'b': 75.0,
+            'standard': 75.0,
+            'grade c': 50.0,
+            'c': 50.0,
+            'basic': 50.0,
+        }
+        return quality_scores.get(quality.strip().lower())
+
+    def get_listing_score_breakdown(
+        self,
+        listing,
+        required_quantity_kg: float,
+        reference_latitude: float,
+        reference_longitude: float,
+    ) -> dict[str, float]:
+        """Calculate transparent 0-100 component scores and their weighted total.
+
+        Quality compatibility is worth 25%, price competitiveness 20%, quantity
+        fit 20%, pickup proximity 20%, route compatibility 10%, and fulfillment
+        reliability 5%. Route and reliability are neutral (50/100) because the
+        MVP has no route or reliability data; they are not inferred from other
+        fields.
+        """
+        if required_quantity_kg <= 0:
+            raise ValueError('Requested quantity must be greater than zero.')
+
+        # Price score: lower price gets a higher score.
+        all_prices = [
+            item.price_per_kg
+            for item in self.listings.values()
+            if item.crop.lower() == listing.crop.lower()
+            and item.available_quantity_kg > 0
+            and self._quality_score(item.quality) is not None
+        ]
+
+        if all_prices:
+            min_price = min(all_prices)
+            max_price = max(all_prices)
+
+            if max_price == min_price:
+                # No price difference is evidence of neither advantage nor
+                # disadvantage, so keep this factor neutral.
+                price_score = 50.0
+            else:
+                price_score = (
+                    (max_price - listing.price_per_kg)
+                    / (max_price - min_price)
+                ) * 100
+        else:
+            price_score = 0.0
+
+        quality_score = self._quality_score(listing.quality)
+        if quality_score is None:
+            raise ValueError(f'Listing {listing.listing_id} has incompatible quality.')
+
+        # Quantity score: listings that contribute more useful quantity toward
+        # the buyer requirement receive a higher score.
+        quantity_ratio = min(
+            listing.available_quantity_kg / required_quantity_kg,
+            1.0,
+        )
+        quantity_score = quantity_ratio * 100
+
+        # Distance score: closer pickup points are preferred.
+        lat_diff = listing.latitude - reference_latitude
+        lon_diff = listing.longitude - reference_longitude
+
+        distance = (lat_diff ** 2 + lon_diff ** 2) ** 0.5
+
+        # Normalize distance into a simple proximity score.
+        distance_score = max(0.0, 100.0 - (distance * 1000))
+
+        # No route or fulfillment history exists in the MVP, so both factors
+        # are deliberately neutral instead of being guessed from listing data.
+        route_score = 50.0
+        reliability_score = 50.0
+
+        # Weighted suitability score using the business weights above.
+        score = (
+            quality_score * 0.25
+            + price_score * 0.20
+            + quantity_score * 0.20
+            + distance_score * 0.20
+            + route_score * 0.10
+            + reliability_score * 0.05
+        )
+
+        return {
+            'quality': round(quality_score, 2),
+            'price': round(price_score, 2),
+            'quantity': round(quantity_score, 2),
+            'distance': round(distance_score, 2),
+            'route': route_score,
+            'reliability': reliability_score,
+            'score': round(score, 2),
+        }
+
+    def get_suitability_scores(
+        self,
+        fpo_id: str,
+        crop: str,
+        required_quantity_kg: float,
+        reference_latitude: float,
+        reference_longitude: float,
+    ) -> list[dict]:
+        """Rank currently available, quality-compatible listings for an order."""
+        if required_quantity_kg <= 0:
+            raise ValueError('Requested quantity must be greater than zero.')
+
+        candidates = []
+        for listing in self.listings.values():
+            if (
+                listing.fpo_id != fpo_id
+                or listing.crop.lower() != crop.lower()
+                or listing.available_quantity_kg <= 0
+                or self._quality_score(listing.quality) is None
+            ):
+                continue
+
+            breakdown = self.get_listing_score_breakdown(
+                listing,
+                required_quantity_kg,
+                reference_latitude,
+                reference_longitude,
+            )
+            candidates.append({
+                'listing_id': listing.listing_id,
+                'farmer_id': listing.farmer_id,
+                'farmer_name': listing.farmer_name,
+                'crop': listing.crop,
+                'quality': listing.quality,
+                'available_quantity_kg': listing.available_quantity_kg,
+                'price_per_kg': listing.price_per_kg,
+                'suitability_score': breakdown['score'],
+                'score_breakdown': {
+                    key: breakdown[key]
+                    for key in ('quality', 'price', 'quantity', 'distance', 'route', 'reliability')
+                },
+            })
+
+        return sorted(
+            candidates,
+            key=lambda candidate: candidate['suitability_score'],
+            reverse=True,
+        )
 
     def get_available_produce(self, fpo_id: str) -> list[dict]:
         return [
