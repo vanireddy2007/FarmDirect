@@ -1,4 +1,5 @@
 # Price Intelligence for FarmDirect
+
 from predictor import predict_price
 
 
@@ -58,8 +59,7 @@ def generate_explanation(predicted_price, mae):
 
 def recommend_selling_window(current_price, predicted_price):
     """
-    Gives a simple selling-window recommendation
-    by comparing the current price with the expected price.
+    Gives a simple selling-window recommendation.
     """
 
     difference_percentage = (
@@ -76,43 +76,53 @@ def recommend_selling_window(current_price, predicted_price):
         return "Current price is close to the expected price; selling now is reasonable."
 
 
-# Current prototype values
+# --------------------------------
+# CURRENT PROTOTYPE VALUES
+# --------------------------------
 
 predicted_price = predict_price(
     lag_1_price=2900,
-    rolling_7_day_average=2780
+    rolling_7_day_average=2780,
+    month=8,
+    day_of_week=3
 )
 
-mae = 81.53
+# MAE from the NEW model
+mae = 118.27
+
+# Current market price
 current_price = 2600
 
 
-# Calculate price intelligence
+# --------------------------------
+# CALCULATE PRICE INTELLIGENCE
+# --------------------------------
+
 result = calculate_price_intelligence(
     predicted_price,
     mae
 )
 
-# Calculate confidence
 confidence = calculate_confidence(
     predicted_price,
     mae
 )
 
-# Generate explanation
 explanation = generate_explanation(
     predicted_price,
     mae
 )
 
-# Recommend selling window
 selling_window = recommend_selling_window(
     current_price,
     predicted_price
 )
 
 
-# Display results
+# --------------------------------
+# DISPLAY RESULTS
+# --------------------------------
+
 print("PRICE INTELLIGENCE")
 print("------------------")
 

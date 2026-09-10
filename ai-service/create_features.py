@@ -1,10 +1,17 @@
 import pandas as pd
 
+# Load dataset
 data = pd.read_csv("data/farmdirect_sample_mandi_prices.csv")
 
+# Convert date column
 data["date"] = pd.to_datetime(data["date"])
 
+# Sort by date
 data = data.sort_values("date")
+
+# -----------------------------
+# PRICE FEATURES
+# -----------------------------
 
 # Yesterday's modal price
 data["lag_1_price"] = data["modal_price"].shift(1)
@@ -23,36 +30,54 @@ data["rolling_30_day_average"] = (
     .mean()
 )
 
-print(data[[
-    "date",
-    "modal_price",
-    "lag_1_price",
-    "rolling_7_day_average",
-    "rolling_30_day_average"
-]])
-# Tomorrow's modal price - our target
+# -----------------------------
+# TIME FEATURES
+# -----------------------------
+
+# Month of the year
+data["month"] = data["date"].dt.month
+
+# Day of the week
+data["day_of_week"] = data["date"].dt.dayofweek
+
+# -----------------------------
+# TARGET
+# -----------------------------
+
+# Tomorrow's modal price
 data["target_price"] = data["modal_price"].shift(-1)
 
-print("\nTARGET PRICE:")
-print(data[[
-    "date",
-    "modal_price",
-    "lag_1_price",
-    "rolling_7_day_average",
-    "target_price"
-]])
-
-# Remove rows where target price is missing
+# Remove rows where target is missing
 model_data = data.dropna(subset=["target_price"])
 
-# Select features for the model
+# -----------------------------
+# MODEL FEATURES
+# -----------------------------
+
 features = [
     "lag_1_price",
-    "rolling_7_day_average"
+    "rolling_7_day_average",
+    "month",
+    "day_of_week"
 ]
 
 X = model_data[features]
 y = model_data["target_price"]
+
+# -----------------------------
+# DISPLAY RESULTS
+# -----------------------------
+
+print("\nFEATURE DATA:")
+print(data[[
+    "date",
+    "modal_price",
+    "lag_1_price",
+    "rolling_7_day_average",
+    "rolling_30_day_average",
+    "month",
+    "day_of_week"
+]].tail(10))
 
 print("\nMODEL INPUT (X):")
 print(X.head())
@@ -61,3 +86,4 @@ print("\nTARGET (y):")
 print(y.head())
 
 print("\nTraining rows:", len(model_data))
+print("Number of features:", len(features))
