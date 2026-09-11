@@ -1,4 +1,6 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
+
 from predictor import predict_price
 from price_intelligence import (
     calculate_price_intelligence,
@@ -7,12 +9,33 @@ from price_intelligence import (
     recommend_selling_window
 )
 
+
+# ============================================================
+# APP
+# ============================================================
+
 app = FastAPI(
     title="FarmDirect AI Service",
     description="AI service for market price intelligence",
     version="1.0"
 )
 
+
+# ============================================================
+# PRICE PREDICTION REQUEST MODEL
+# ============================================================
+
+class PricePredictionRequest(BaseModel):
+    lag_1_price: float
+    rolling_7_day_average: float
+    month: int
+    day_of_week: int
+    current_price: float
+
+
+# ============================================================
+# HOME
+# ============================================================
 
 @app.get("/")
 def home():
@@ -21,46 +44,44 @@ def home():
     }
 
 
+# ============================================================
+# PRICE PREDICTION
+# ============================================================
+
 @app.post("/predict-price")
 def predict_market_price(
-    lag_1_price: float,
-    rolling_7_day_average: float,
-    month: int,
-    day_of_week: int,
-    current_price: float
+    data: PricePredictionRequest
 ):
-    # Predict price
+
     predicted_price = predict_price(
-        lag_1_price,
-        rolling_7_day_average,
-        month,
-        day_of_week
+        data.lag_1_price,
+        data.rolling_7_day_average,
+        data.month,
+        data.day_of_week
     )
 
-    # Current prototype MAE
+    # Initial development-dataset MAE.
+    # This value must be recalculated when real mandi
+    # data is used for final model training.
     mae = 118.27
 
-    # Calculate price intelligence
     price_result = calculate_price_intelligence(
         predicted_price,
         mae
     )
 
-    # Calculate confidence
     confidence = calculate_confidence(
         predicted_price,
         mae
     )
 
-    # Generate explanation
     explanation = generate_explanation(
         predicted_price,
         mae
     )
 
-    # Recommend selling window
     selling_window = recommend_selling_window(
-        current_price,
+        data.current_price,
         predicted_price
     )
 
