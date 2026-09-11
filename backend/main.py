@@ -1,4 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
+import os
+import httpx
+from dotenv import load_dotenv
 
 from database import get_connection
 
@@ -7,6 +10,7 @@ from routers.produce import router as produce_router
 from routers.orders import router as orders_router
 from routers.offers import router as offers_router
 from routers.aggregation import router as aggregation_router
+from routers.ai import router as ai_router
 
 from auth_dependency import get_current_user
 
@@ -22,6 +26,19 @@ from ai.matching_service import (
     calculate_location_match
 )
 
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+load_dotenv()
+
+AI_SERVICE_URL = os.getenv("AI_SERVICE_URL")
+
+
+# ============================================================
+# APP
+# ============================================================
 
 app = FastAPI()
 
@@ -54,6 +71,8 @@ app.include_router(
     aggregation_router,
     prefix="/aggregation"
 )
+
+app.include_router(ai_router)
 
 
 # ============================================================
@@ -478,3 +497,68 @@ def real_match(
             else "Low"
         )
     }
+
+
+# ============================================================
+# MEMBER 4 AI PRICE PREDICTION SERVICE
+# ============================================================
+
+@app.post("/ai/member4/predict-price")
+async def member4_predict_price(data: dict):
+
+    if not AI_SERVICE_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="AI_SERVICE_URL is not configured"
+        )
+
+    required_fields = [
+        "lag_1_price",
+        "rolling_7_day_average",
+        "month",
+        "day_of_week",
+        "current_price"
+    ]
+
+    for field in required_fields:
+
+        if field not in data:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing field: {field}"
+            )
+
+    payload = {
+        "lag_1_price": data["lag_1_price"],
+        "rolling_7_day_average": data["rolling_7_day_average"],
+        "month": data["month"],
+        "day_of_week": data["day_of_week"],
+        "current_price": data["current_price"]
+    }
+
+    try:
+
+        async with httpx.AsyncClient(
+            timeout=30.0
+        ) as client:
+
+            response = await client.post(
+                f"{AI_SERVICE_URL}/predict-price",
+                json=payload
+            )
+
+        if response.status_code != 200:
+
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=response.text
+            )
+
+        return response.json()
+
+    except httpx.RequestError as e:
+
+        raise HTTPException(
+            status_code=503,
+            detail=f"AI service unavailable: {str(e)}"
+        )
