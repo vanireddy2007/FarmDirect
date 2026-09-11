@@ -1,4 +1,5 @@
 import pandas as pd
+import matplotlib.pyplot as plt
 
 data = pd.read_csv("data/farmdirect_sample_mandi_prices.csv")
 
@@ -12,9 +13,6 @@ print("Modal:", data["modal_price"].mean())
 
 print("\nMISSING VALUES:")
 print(data.isnull().sum())
-
-#prize trend 
-import matplotlib.pyplot as plt
 
 data["date"] = pd.to_datetime(data["date"])
 
