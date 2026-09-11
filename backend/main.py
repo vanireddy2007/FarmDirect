@@ -562,3 +562,4 @@ async def member4_predict_price(data: dict):
             status_code=503,
             detail=f"AI service unavailable: {str(e)}"
         )
+        
