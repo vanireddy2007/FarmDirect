@@ -35,10 +35,20 @@ class AggregationRequest(BaseModel):
         return self
 
 
-class BulkOrderMatchRequest(BaseModel):
-    buyer_order_id: str
+class BulkOrderItem(BaseModel):
     crop: str
     required_quantity_kg: float = Field(..., gt=0)
+
+
+class BulkOrderMatchRequest(BaseModel):
+    buyer_order_id: str
+    items: list[BulkOrderItem]
+
+    @model_validator(mode='after')
+    def validate_items(self) -> 'BulkOrderMatchRequest':
+        if not self.items:
+            raise ValueError('At least one crop item must be requested.')
+        return self
 
 
 class PickupLocation(BaseModel):

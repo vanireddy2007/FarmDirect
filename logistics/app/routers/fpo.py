@@ -68,7 +68,8 @@ def match_bulk_order(fpo_id: str, request: BulkOrderMatchRequest):
     if not storage.validate_fpo(fpo_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'FPO {fpo_id} not found.')
     try:
-        result = storage.match_bulk_order(fpo_id, request.buyer_order_id, request.crop, request.required_quantity_kg)
+        items = [item.model_dump() for item in request.items]
+        result = storage.match_bulk_order(fpo_id, request.buyer_order_id, items)
         return {'message': 'Bulk order matching completed.', **result}
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
