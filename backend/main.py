@@ -34,6 +34,7 @@ from ai.matching_service import (
 load_dotenv()
 
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL")
+LANGUAGE_SERVICE_URL = os.getenv("LANGUAGE_SERVICE_URL")
 
 
 # ============================================================
@@ -561,5 +562,64 @@ async def member4_predict_price(data: dict):
         raise HTTPException(
             status_code=503,
             detail=f"AI service unavailable: {str(e)}"
+        )
+# ============================================================
+# LANGUAGE SERVICE - TRANSLATION
+# ============================================================
+
+@app.post("/language/translate")
+async def language_translate(data: dict):
+
+    if not LANGUAGE_SERVICE_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="LANGUAGE_SERVICE_URL is not configured"
+        )
+
+    required_fields = [
+        "text",
+        "source_language",
+        "target_language"
+    ]
+
+    for field in required_fields:
+
+        if field not in data:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Missing field: {field}"
+            )
+
+    payload = {
+        "text": data["text"],
+        "source_language": data["source_language"],
+        "target_language": data["target_language"]
+    }
+
+    try:
+
+        async with httpx.AsyncClient(
+            timeout=30.0
+        ) as client:
+
+            response = await client.post(
+                f"{LANGUAGE_SERVICE_URL}/translate",
+                json=payload
+            )
+
+        if response.status_code != 200:
+
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=response.text
+            )
+
+        return response.json()
+
+    except httpx.RequestError as e:
+
+        raise HTTPException(
+            status_code=503,
+            detail=f"Language service unavailable: {str(e)}"
         )
         
