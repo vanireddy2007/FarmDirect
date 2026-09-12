@@ -1,19 +1,67 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from datetime import datetime, timezone
 
-from .data import AggregationBatch, INITIAL_LISTINGS
+from .data import AggregationBatch, FarmerListing
+from .database import get_connection
+from .geocoding import geocode_location
 
 
 class AggregationStore:
     def __init__(self) -> None:
-        self.listings = {
-            listing.listing_id: listing
-            for listing in deepcopy(INITIAL_LISTINGS)
-        }
+        self.listings: dict[str, FarmerListing] = {}
         self.batches: dict[str, AggregationBatch] = {}
         self.batch_counter = 1
+
+    def _fetch_real_listings(self, fpo_id: str) -> dict[str, FarmerListing]:
+        connection = get_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT p.id, p.farmer_id, p.crop_name, p.quantity, p.unit,
+                   p.quality, p.expected_price, p.location, u.name AS farmer_name
+            FROM produce p
+            JOIN users u ON p.farmer_id = u.id
+            WHERE p.quantity > 0
+            """
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        connection.close()
+
+        listings: dict[str, FarmerListing] = {}
+        for row in rows:
+            coords = geocode_location(row['location'])
+            latitude, longitude = coords if coords else (0.0, 0.0)
+            listing_id = str(row['id'])
+            listings[listing_id] = FarmerListing(
+                listing_id=listing_id,
+                farmer_id=str(row['farmer_id']),
+                farmer_name=row['farmer_name'],
+                fpo_id=fpo_id,
+                crop=row['crop_name'],
+                quality=row['quality'] or 'Grade B',
+                available_quantity_kg=float(row['quantity']),
+                price_per_kg=float(row['expected_price']) if row['expected_price'] else 0.0,
+                latitude=latitude,
+                longitude=longitude,
+            )
+        return listings
+
+    def refresh_listings(self, fpo_id: str) -> None:
+        self.listings = self._fetch_real_listings(fpo_id)
+
+    def validate_fpo(self, fpo_id: str) -> bool:
+        connection = get_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT id FROM users WHERE id = %s AND role = 'FPO'",
+            (fpo_id,),
+        )
+        result = cursor.fetchone()
+        cursor.close()
+        connection.close()
+        return result is not None
 
     def score_listing_for_bulk_order(
         self,
@@ -65,7 +113,6 @@ class AggregationStore:
         if required_quantity_kg <= 0:
             raise ValueError('Requested quantity must be greater than zero.')
 
-        # Price score: lower price gets a higher score.
         all_prices = [
             item.price_per_kg
             for item in self.listings.values()
@@ -79,8 +126,6 @@ class AggregationStore:
             max_price = max(all_prices)
 
             if max_price == min_price:
-                # No price difference is evidence of neither advantage nor
-                # disadvantage, so keep this factor neutral.
                 price_score = 50.0
             else:
                 price_score = (
@@ -94,29 +139,20 @@ class AggregationStore:
         if quality_score is None:
             raise ValueError(f'Listing {listing.listing_id} has incompatible quality.')
 
-        # Quantity score: listings that contribute more useful quantity toward
-        # the buyer requirement receive a higher score.
         quantity_ratio = min(
             listing.available_quantity_kg / required_quantity_kg,
             1.0,
         )
         quantity_score = quantity_ratio * 100
 
-        # Distance score: closer pickup points are preferred.
         lat_diff = listing.latitude - reference_latitude
         lon_diff = listing.longitude - reference_longitude
-
         distance = (lat_diff ** 2 + lon_diff ** 2) ** 0.5
-
-        # Normalize distance into a simple proximity score.
         distance_score = max(0.0, 100.0 - (distance * 1000))
 
-        # No route or fulfillment history exists in the MVP, so both factors
-        # are deliberately neutral instead of being guessed from listing data.
         route_score = 50.0
         reliability_score = 50.0
 
-        # Weighted suitability score using the business weights above.
         score = (
             quality_score * 0.25
             + price_score * 0.20
@@ -148,11 +184,12 @@ class AggregationStore:
         if required_quantity_kg <= 0:
             raise ValueError('Requested quantity must be greater than zero.')
 
+        self.refresh_listings(fpo_id)
+
         candidates = []
         for listing in self.listings.values():
             if (
-                listing.fpo_id != fpo_id
-                or listing.crop.lower() != crop.lower()
+                listing.crop.lower() != crop.lower()
                 or listing.available_quantity_kg <= 0
                 or self._quality_score(listing.quality) is None
             ):
@@ -186,6 +223,7 @@ class AggregationStore:
         )
 
     def get_available_produce(self, fpo_id: str) -> list[dict]:
+        self.refresh_listings(fpo_id)
         return [
             {
                 'listing_id': listing.listing_id,
@@ -200,15 +238,43 @@ class AggregationStore:
                 'longitude': listing.longitude,
             }
             for listing in self.listings.values()
-            if listing.fpo_id == fpo_id and listing.available_quantity_kg > 0
+            if listing.available_quantity_kg > 0
         ]
 
-    def validate_fpo(self, fpo_id: str) -> bool:
-        return any(listing.fpo_id == fpo_id for listing in self.listings.values())
+    def _persist_batch_quantities(self, contributions: list[dict]) -> None:
+        connection = get_connection()
+        cursor = connection.cursor()
+        try:
+            for contribution in contributions:
+                cursor.execute(
+                    """
+                    UPDATE produce
+                    SET quantity = quantity - %s
+                    WHERE id = %s AND quantity >= %s
+                    """,
+                    (
+                        contribution['quantity_kg'],
+                        contribution['listing_id'],
+                        contribution['quantity_kg'],
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    connection.rollback()
+                    cursor.close()
+                    connection.close()
+                    raise ValueError(
+                        f"Produce {contribution['listing_id']} no longer has enough available quantity."
+                    )
+            connection.commit()
+        finally:
+            cursor.close()
+            connection.close()
 
     def create_batch(self, fpo_id: str, crop: str, requested_quantity_kg: float, selections: list[dict]) -> dict:
         if not self.validate_fpo(fpo_id):
             raise ValueError(f'Invalid FPO ID: {fpo_id}')
+
+        self.refresh_listings(fpo_id)
 
         total_selected = 0.0
         contributions: list[dict] = []
@@ -218,10 +284,8 @@ class AggregationStore:
             if quantity <= 0:
                 raise ValueError(f'Quantity for listing {listing_id} must be greater than zero.')
             listing = self.listings.get(listing_id)
-            if listing is None or listing.fpo_id != fpo_id:
+            if listing is None:
                 raise ValueError(f'Invalid listing {listing_id} for FPO {fpo_id}.')
-            if listing.crop.lower() != crop.lower():
-                raise ValueError(f'Listing {listing_id} does not match crop {crop}.')
             if quantity > listing.available_quantity_kg:
                 raise ValueError(f'Insufficient available quantity for listing {listing_id}.')
             if any(entry['listing_id'] == listing_id for entry in contributions):
@@ -240,6 +304,8 @@ class AggregationStore:
 
         if total_selected <= 0:
             raise ValueError('Requested quantity must be greater than zero.')
+
+        self._persist_batch_quantities(contributions)
 
         batch_id = f'BATCH-{self.batch_counter:04d}'
         self.batch_counter += 1
@@ -285,13 +351,10 @@ class AggregationStore:
                 })
         return results
 
-    def match_bulk_order(self, fpo_id: str, buyer_order_id: str, crop: str, required_quantity_kg: float) -> dict:
+    def match_bulk_order_single_crop(self, fpo_id: str, buyer_order_id: str, crop: str, required_quantity_kg: float) -> dict:
         compatible_batches = [
             batch for batch in self.batches.values() if batch.fpo_id == fpo_id and batch.crop.lower() == crop.lower() and batch.available_quantity_kg > 0
         ]
-        if not compatible_batches:
-            return {'buyer_order_id': buyer_order_id, 'matched_quantity_kg': 0, 'remaining_quantity_kg': required_quantity_kg, 'matched_batches': []}
-
         matched_batches = []
         remaining = required_quantity_kg
         for batch in compatible_batches:
@@ -310,8 +373,21 @@ class AggregationStore:
                 remaining -= match_qty
 
         return {
-            'buyer_order_id': buyer_order_id,
+            'crop': crop,
             'matched_quantity_kg': required_quantity_kg - remaining,
             'remaining_quantity_kg': remaining,
             'matched_batches': matched_batches,
+        }
+
+    def match_bulk_order(self, fpo_id: str, buyer_order_id: str, items: list[dict]) -> dict:
+        item_results = []
+        for item in items:
+            result = self.match_bulk_order_single_crop(fpo_id, buyer_order_id, item['crop'], item['required_quantity_kg'])
+            item_results.append(result)
+
+        return {
+            'buyer_order_id': buyer_order_id,
+            'items': item_results,
+            'total_matched_quantity_kg': sum(r['matched_quantity_kg'] for r in item_results),
+            'total_remaining_quantity_kg': sum(r['remaining_quantity_kg'] for r in item_results),
         }

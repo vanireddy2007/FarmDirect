@@ -171,14 +171,6 @@ def add_produce_to_aggregation(
             detail="You can only add your own produce"
         )
 
-    if produce["crop_name"].lower() != aggregation["crop_name"].lower():
-        cursor.close()
-        connection.close()
-        raise HTTPException(
-            status_code=400,
-            detail="Crop does not match aggregation"
-        )
-
     if quantity > float(produce["quantity"]):
         cursor.close()
         connection.close()

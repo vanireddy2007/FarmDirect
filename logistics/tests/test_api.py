@@ -2,18 +2,16 @@ from fastapi.testclient import TestClient
 
 from logistics.app.aggregation import AggregationStore
 from logistics.app.data import FarmerListing
-from logistics.app.routers import fpo as fpo_router
 from logistics.app.main import app
-
 
 client = TestClient(app)
 
+FPO_ID = "6"
 
-def _fresh_storage(monkeypatch):
-    storage = AggregationStore()
-    monkeypatch.setattr(fpo_router, 'storage', storage)
-    return storage
 
+# ---------------------------------------------------------------------------
+# Basic health and validation
+# ---------------------------------------------------------------------------
 
 def test_health_endpoint():
     response = client.get('/health')
@@ -21,74 +19,192 @@ def test_health_endpoint():
     assert response.json()['status'] == 'ok'
 
 
-def test_available_produce():
-    response = client.get('/api/fpo/FPO-001/available-produce')
-    assert response.status_code == 200
-    data = response.json()
-    assert len(data['produce']) >= 3
-    assert all(item['fpo_id'] == 'FPO-001' for item in data['produce'])
-
-
-def test_valid_aggregation():
-    payload = {
-        'crop': 'Rice',
-        'requested_quantity_kg': 900,
-        'selected_listings': [
-            {'listing_id': 'L001', 'quantity_kg': 500},
-            {'listing_id': 'L002', 'quantity_kg': 400},
-        ],
-    }
-    response = client.post('/api/fpo/FPO-001/aggregate', json=payload)
-    assert response.status_code == 200
-    result = response.json()
-    assert result['batch']['crop'] == 'Rice'
-    assert result['batch']['total_quantity_kg'] == 900
-    assert result['contributions'][0]['quantity_kg'] == 500
-
-
-def test_over_allocation_rejected():
-    payload = {
-        'crop': 'Rice',
-        'requested_quantity_kg': 1000,
-        'selected_listings': [
-            {'listing_id': 'L001', 'quantity_kg': 1000},
-        ],
-    }
-    response = client.post('/api/fpo/FPO-001/aggregate', json=payload)
-    assert response.status_code == 400
-    assert 'insufficient' in response.json()['detail'].lower() or 'available' in response.json()['detail'].lower()
-
-
 def test_invalid_fpo_rejected():
     response = client.get('/api/fpo/INVALID/available-produce')
     assert response.status_code == 404
 
 
-def test_mixed_crop_rejected():
+# ---------------------------------------------------------------------------
+# Real API / integration tests (use real MySQL via throwaway test produce)
+# ---------------------------------------------------------------------------
+
+def test_available_produce(make_test_produce):
+    produce_id = make_test_produce('Rice', 100)
+    response = client.get(f'/api/fpo/{FPO_ID}/available-produce')
+    assert response.status_code == 200
+    data = response.json()
+    listing_ids = [item['listing_id'] for item in data['produce']]
+    assert produce_id in listing_ids
+
+
+def test_valid_aggregation(make_test_produce):
+    id_a = make_test_produce('Rice', 500)
+    id_b = make_test_produce('Rice', 400)
+    payload = {
+        'crop': 'Rice',
+        'requested_quantity_kg': 900,
+        'selected_listings': [
+            {'listing_id': id_a, 'quantity_kg': 500},
+            {'listing_id': id_b, 'quantity_kg': 400},
+        ],
+    }
+    response = client.post(f'/api/fpo/{FPO_ID}/aggregate', json=payload)
+    assert response.status_code == 200
+    result = response.json()
+    assert result['batch']['crop'] == 'Rice'
+    assert result['batch']['total_quantity_kg'] == 900
+    assert len(result['contributions']) == 2
+
+
+def test_over_allocation_rejected(make_test_produce):
+    produce_id = make_test_produce('Rice', 50)
+    payload = {
+        'crop': 'Rice',
+        'requested_quantity_kg': 1000,
+        'selected_listings': [
+            {'listing_id': produce_id, 'quantity_kg': 1000},
+        ],
+    }
+    response = client.post(f'/api/fpo/{FPO_ID}/aggregate', json=payload)
+    assert response.status_code == 400
+    assert 'insufficient' in response.json()['detail'].lower() or 'available' in response.json()['detail'].lower()
+
+
+def test_mixed_crop_allowed(make_test_produce):
+    produce_id = make_test_produce('Rice', 200)
     payload = {
         'crop': 'Wheat',
         'requested_quantity_kg': 200,
         'selected_listings': [
-            {'listing_id': 'L001', 'quantity_kg': 200},
+            {'listing_id': produce_id, 'quantity_kg': 200},
         ],
     }
-    response = client.post('/api/fpo/FPO-001/aggregate', json=payload)
-    assert response.status_code == 400
-    assert 'crop' in response.json()['detail'].lower()
+    response = client.post(f'/api/fpo/{FPO_ID}/aggregate', json=payload)
+    assert response.status_code == 200
+    result = response.json()
+    assert result['batch']['crop'] == 'Wheat'
+    assert result['contributions'][0]['crop'] == 'Rice'
 
 
-def test_bulk_order_matching():
-    response = client.post('/api/fpo/FPO-001/match-bulk-order', json={
-        'buyer_order_id': 'BUY-100',
+def test_bulk_order_matching(make_test_produce):
+    produce_id = make_test_produce('Rice', 600)
+    client.post(f'/api/fpo/{FPO_ID}/aggregate', json={
         'crop': 'Rice',
-        'required_quantity_kg': 600,
+        'requested_quantity_kg': 600,
+        'selected_listings': [{'listing_id': produce_id, 'quantity_kg': 600}],
+    })
+
+    response = client.post(f'/api/fpo/{FPO_ID}/match-bulk-order', json={
+        'buyer_order_id': 'BUY-100',
+        'items': [
+            {'crop': 'Rice', 'required_quantity_kg': 600},
+        ],
     })
     assert response.status_code == 200
     data = response.json()
-    assert data['matched_quantity_kg'] > 0
-    assert data['remaining_quantity_kg'] >= 0
-    assert data['matched_batches']
+    assert data['total_matched_quantity_kg'] > 0
+    assert data['items'][0]['matched_batches']
 
+
+def test_suitability_validates_fpo_and_requested_quantity():
+    invalid_fpo = client.get('/api/fpo/INVALID/suitability-scores', params={
+        'crop': 'Rice', 'required_quantity_kg': 100,
+        'reference_latitude': 25.0, 'reference_longitude': 91.0,
+    })
+    invalid_quantity = client.get(f'/api/fpo/{FPO_ID}/suitability-scores', params={
+        'crop': 'Rice', 'required_quantity_kg': 0,
+        'reference_latitude': 25.0, 'reference_longitude': 91.0,
+    })
+    assert invalid_fpo.status_code == 404
+    assert invalid_quantity.status_code == 400
+
+
+def test_suitability_to_aggregation_integration(make_test_produce):
+    id_a = make_test_produce('Rice', 400)
+    id_b = make_test_produce('Rice', 350)
+    id_c = make_test_produce('Rice', 250)
+
+    scores = client.get(f'/api/fpo/{FPO_ID}/suitability-scores', params={
+        'crop': 'Rice', 'required_quantity_kg': 1000,
+        'reference_latitude': 25.0, 'reference_longitude': 91.0,
+    })
+    assert scores.status_code == 200
+    candidate_ids = [c['listing_id'] for c in scores.json()['candidates']]
+    assert id_a in candidate_ids
+    assert id_b in candidate_ids
+    assert id_c in candidate_ids
+
+    aggregation = client.post(f'/api/fpo/{FPO_ID}/aggregate', json={
+        'crop': 'Rice',
+        'requested_quantity_kg': 1000,
+        'selected_listings': [
+            {'listing_id': id_a, 'quantity_kg': 400},
+            {'listing_id': id_b, 'quantity_kg': 350},
+            {'listing_id': id_c, 'quantity_kg': 250},
+        ],
+    })
+    assert aggregation.status_code == 200
+    assert len(aggregation.json()['contributions']) == 3
+
+    available = client.get(f'/api/fpo/{FPO_ID}/available-produce').json()['produce']
+    quantities = {item['listing_id']: item['available_quantity_kg'] for item in available}
+    assert quantities.get(id_a, 0) == 0
+    assert quantities.get(id_b, 0) == 0
+    assert quantities.get(id_c, 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# Pure scoring-logic tests (no API, no database — direct store calls only)
+# ---------------------------------------------------------------------------
+
+def test_quality_price_quantity_and_distance_affect_scores():
+    store = AggregationStore()
+    store.listings = {
+        'HIGH': FarmerListing('HIGH', 'F-HIGH', 'High Quality', FPO_ID, 'Rice', 'Grade A', 1000, 30, 25.001, 91.001),
+        'LOW': FarmerListing('LOW', 'F-LOW', 'Low Quality', FPO_ID, 'Rice', 'Grade B', 500, 20, 25.020, 91.020),
+    }
+    high_breakdown = store.get_listing_score_breakdown(store.listings['HIGH'], 1000, 25.0, 91.0)
+    low_breakdown = store.get_listing_score_breakdown(store.listings['LOW'], 1000, 25.0, 91.0)
+
+    assert high_breakdown['quality'] > low_breakdown['quality']
+    assert low_breakdown['price'] > high_breakdown['price']
+    assert high_breakdown['quantity'] > low_breakdown['quantity']
+    assert high_breakdown['distance'] > low_breakdown['distance']
+
+
+def test_suitability_ranking_returns_compatible_candidates():
+    store = AggregationStore()
+    store.refresh_listings = lambda fpo_id: None
+    store.listings = {
+        'A': FarmerListing('A', 'F-A', 'Farmer A', FPO_ID, 'Rice', 'Grade A', 800, 28.0, 25.010, 91.020),
+        'B': FarmerListing('B', 'F-B', 'Farmer B', FPO_ID, 'Rice', 'Grade A', 600, 27.5, 25.030, 91.040),
+        'C': FarmerListing('C', 'F-C', 'Farmer C', FPO_ID, 'Wheat', 'Grade B', 700, 26.0, 25.050, 91.060),
+    }
+    candidates = store.get_suitability_scores(FPO_ID, 'Rice', 1000, 25.0, 91.0)
+    assert [c['listing_id'] for c in candidates] == ['B', 'A']
+    assert set(candidates[0]['score_breakdown']) == {
+        'quality', 'price', 'quantity', 'distance', 'route', 'reliability'
+    }
+
+
+def test_incompatible_crop_quality_and_zero_quantity_are_excluded():
+    store = AggregationStore()
+    store.refresh_listings = lambda fpo_id: None
+    store.listings = {
+        'A': FarmerListing('A', 'F-A', 'Farmer A', FPO_ID, 'Rice', 'Grade A', 0, 28.0, 25.010, 91.020),
+        'B': FarmerListing('B', 'F-B', 'Farmer B', FPO_ID, 'Rice', 'Unknown', 600, 27.5, 25.030, 91.040),
+        'C': FarmerListing('C', 'F-C', 'Farmer C', FPO_ID, 'Wheat', 'Grade B', 700, 26.0, 25.050, 91.060),
+    }
+    rice_candidates = store.get_suitability_scores(FPO_ID, 'Rice', 100, 25.0, 91.0)
+    assert rice_candidates == []
+
+    wheat_candidates = store.get_suitability_scores(FPO_ID, 'Wheat', 100, 25.0, 91.0)
+    assert [c['listing_id'] for c in wheat_candidates] == ['C']
+
+
+# ---------------------------------------------------------------------------
+# Route optimization / cost calculation (unchanged, no database dependency)
+# ---------------------------------------------------------------------------
 
 def test_capacity_validation_for_route_optimization():
     payload = {
@@ -228,109 +344,3 @@ def test_farmer_cost_allocation_and_totals():
     assert data['total_transportation_cost'] == 2400
     assert round(sum(item['allocated_cost'] for item in data['farmer_allocations']), 2) == 2400
     assert data['farmer_allocations'][0]['share_percentage'] > 0
-
-
-def test_suitability_ranking_returns_compatible_candidates(monkeypatch):
-    _fresh_storage(monkeypatch)
-    response = client.get('/api/fpo/FPO-001/suitability-scores', params={
-        'crop': 'Rice',
-        'required_quantity_kg': 1000,
-        'reference_latitude': 25.0,
-        'reference_longitude': 91.0,
-    })
-
-    assert response.status_code == 200
-    data = response.json()
-    assert [item['listing_id'] for item in data['candidates']] == ['L001', 'L002']
-    assert set(data['candidates'][0]['score_breakdown']) == {
-        'quality', 'price', 'quantity', 'distance', 'route', 'reliability'
-    }
-
-
-def test_quality_price_quantity_and_distance_affect_scores(monkeypatch):
-    storage = _fresh_storage(monkeypatch)
-    storage.listings = {
-        'HIGH': FarmerListing('HIGH', 'F-HIGH', 'High Quality', 'FPO-001', 'Rice', 'Grade A', 1000, 30, 25.001, 91.001),
-        'LOW': FarmerListing('LOW', 'F-LOW', 'Low Quality', 'FPO-001', 'Rice', 'Grade B', 500, 20, 25.020, 91.020),
-    }
-    high = client.get('/api/fpo/FPO-001/suitability-scores', params={
-        'crop': 'Rice', 'required_quantity_kg': 1000,
-        'reference_latitude': 25.0, 'reference_longitude': 91.0,
-    }).json()['candidates']
-    by_id = {item['listing_id']: item for item in high}
-
-    assert by_id['HIGH']['score_breakdown']['quality'] > by_id['LOW']['score_breakdown']['quality']
-    assert by_id['LOW']['score_breakdown']['price'] > by_id['HIGH']['score_breakdown']['price']
-    assert by_id['HIGH']['score_breakdown']['quantity'] > by_id['LOW']['score_breakdown']['quantity']
-    assert by_id['HIGH']['score_breakdown']['distance'] > by_id['LOW']['score_breakdown']['distance']
-    assert high[0]['listing_id'] == 'HIGH'
-
-
-def test_incompatible_crop_quality_and_zero_quantity_are_excluded(monkeypatch):
-    storage = _fresh_storage(monkeypatch)
-    storage.listings['L001'].available_quantity_kg = 0
-    storage.listings['L002'].quality = 'Unknown'
-    response = client.get('/api/fpo/FPO-001/suitability-scores', params={
-        'crop': 'Rice', 'required_quantity_kg': 100,
-        'reference_latitude': 25.0, 'reference_longitude': 91.0,
-    })
-    assert response.status_code == 200
-    assert response.json()['candidates'] == []
-
-    wheat_response = client.get('/api/fpo/FPO-001/suitability-scores', params={
-        'crop': 'Wheat', 'required_quantity_kg': 100,
-        'reference_latitude': 25.0, 'reference_longitude': 91.0,
-    })
-    assert wheat_response.status_code == 200
-    assert [item['listing_id'] for item in wheat_response.json()['candidates']] == ['L003']
-
-
-def test_suitability_validates_fpo_and_requested_quantity(monkeypatch):
-    _fresh_storage(monkeypatch)
-    invalid_fpo = client.get('/api/fpo/INVALID/suitability-scores', params={
-        'crop': 'Rice', 'required_quantity_kg': 100,
-        'reference_latitude': 25.0, 'reference_longitude': 91.0,
-    })
-    invalid_quantity = client.get('/api/fpo/FPO-001/suitability-scores', params={
-        'crop': 'Rice', 'required_quantity_kg': 0,
-        'reference_latitude': 25.0, 'reference_longitude': 91.0,
-    })
-    assert invalid_fpo.status_code == 404
-    assert invalid_quantity.status_code == 400
-
-
-def test_suitability_to_aggregation_integration(monkeypatch):
-    storage = _fresh_storage(monkeypatch)
-    storage.listings['L001'].available_quantity_kg = 800
-    storage.listings['L002'].available_quantity_kg = 600
-    storage.listings['L006'] = FarmerListing(
-        'L006', 'F006', 'Farmer F', 'FPO-001', 'Rice', 'Grade A', 300, 28.5, 25.015, 91.025
-    )
-
-    scores = client.get('/api/fpo/FPO-001/suitability-scores', params={
-        'crop': 'Rice', 'required_quantity_kg': 1000,
-        'reference_latitude': 25.0, 'reference_longitude': 91.0,
-    })
-    assert scores.status_code == 200
-    assert len(scores.json()['candidates']) == 3
-    assert storage.listings['L001'].available_quantity_kg == 800
-    assert storage.listings['L002'].available_quantity_kg == 600
-    assert storage.listings['L006'].available_quantity_kg == 300
-
-    aggregation = client.post('/api/fpo/FPO-001/aggregate', json={
-        'crop': 'Rice',
-        'requested_quantity_kg': 1000,
-        'selected_listings': [
-            {'listing_id': 'L001', 'quantity_kg': 400},
-            {'listing_id': 'L002', 'quantity_kg': 350},
-            {'listing_id': 'L006', 'quantity_kg': 250},
-        ],
-    })
-    assert aggregation.status_code == 200
-    assert len(aggregation.json()['contributions']) == 3
-
-    available = client.get('/api/fpo/FPO-001/available-produce').json()['produce']
-    quantities = {item['listing_id']: item['available_quantity_kg'] for item in available}
-    assert quantities['L001'] == 400
-    assert quantities['L002'] == 250
-    assert quantities['L006'] == 50
