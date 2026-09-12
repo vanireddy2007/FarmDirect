@@ -171,7 +171,6 @@ def add_produce_to_aggregation(
             detail="You can only add your own produce"
         )
 
-   
     if quantity > float(produce["quantity"]):
         cursor.close()
         connection.close()

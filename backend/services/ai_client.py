@@ -1,0 +1,46 @@
+import httpx
+from pydantic import BaseModel, ConfigDict, Field
+
+from config import AI_SERVICE_TIMEOUT_SECONDS, AI_SERVICE_URL
+
+
+class PricePredictionRequest(BaseModel):
+    lag_1_price: float = Field(gt=0)
+    rolling_7_day_average: float = Field(gt=0)
+    month: int = Field(ge=1, le=12)
+    day_of_week: int = Field(ge=0, le=6)
+    current_price: float = Field(gt=0)
+
+
+class PricePredictionResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    predicted_price: float
+    expected_min_price: float
+    expected_max_price: float
+    suggested_minimum_price: float
+    confidence: float
+    explanation: str
+    selling_window: str
+    disclaimer: str
+
+
+class AIServiceError(Exception):
+    """Raised when the separate AI service cannot provide a valid prediction."""
+
+
+def predict_price(
+    request: PricePredictionRequest
+) -> PricePredictionResponse:
+    try:
+        with httpx.Client(timeout=AI_SERVICE_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                f"{AI_SERVICE_URL}/predict-price",
+                json=request.model_dump()
+            )
+            response.raise_for_status()
+            return PricePredictionResponse.model_validate(response.json())
+    except (httpx.TimeoutException, httpx.RequestError) as error:
+        raise AIServiceError("AI price prediction service is unavailable") from error
+    except (httpx.HTTPStatusError, ValueError) as error:
+        raise AIServiceError("AI price prediction service returned an invalid response") from error
