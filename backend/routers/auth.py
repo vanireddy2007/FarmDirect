@@ -1,6 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
 from database import get_connection
 from security import hash_password, verify_password, create_access_token
+
 
 router = APIRouter()
 
@@ -49,9 +51,10 @@ def register_user(
 
 @router.post("/login")
 def login_user(
-    phone: str,
-    password: str
+    form_data: OAuth2PasswordRequestForm = Depends()
 ):
+    phone = form_data.username
+    password = form_data.password
     connection = get_connection()
     cursor = connection.cursor(dictionary=True)
 

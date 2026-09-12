@@ -10,7 +10,7 @@ from routers.produce import router as produce_router
 from routers.orders import router as orders_router
 from routers.offers import router as offers_router
 from routers.aggregation import router as aggregation_router
-from routers.ai import router as ai_router
+from routers.ai import router as ai_router, produce_router as ai_produce_router
 
 from auth_dependency import get_current_user
 
@@ -74,6 +74,8 @@ app.include_router(
 )
 
 app.include_router(ai_router)
+
+app.include_router(ai_produce_router)
 
 
 # ============================================================
@@ -396,109 +398,113 @@ def smart_match(
 
 @app.post("/ai/real-match")
 def real_match(
-    farmer_crop: str,
     buyer_crop: str,
-    available_quantity: float,
     required_quantity: float,
-    farmer_price: float,
     buyer_price: float,
-    farmer_quality: str = "",
     buyer_quality: str = "",
-    farmer_location: str = "",
     buyer_location: str = ""
 ):
 
-    # --------------------------------------------------------
-    # CROP MATCH
-    # --------------------------------------------------------
+    if required_quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Required quantity must be greater than 0"
+        )
 
-    crop_match = calculate_crop_match(
-        farmer_crop,
-        buyer_crop
+    if buyer_price <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Buyer price must be greater than 0"
+        )
+
+    connection = get_connection()
+    cursor = connection.cursor(dictionary=True)
+
+    try:
+        query = """
+        SELECT
+            id,
+            farmer_id,
+            crop_name,
+            quantity,
+            unit,
+            quality,
+            expected_price,
+            location,
+            available_date,
+            created_at
+        FROM produce
+        WHERE quantity > 0
+        ORDER BY created_at DESC
+        """
+
+        cursor.execute(query)
+        farmers = cursor.fetchall()
+
+    finally:
+        cursor.close()
+        connection.close()
+
+    matches = []
+
+    for farmer in farmers:
+
+        crop_match = calculate_crop_match(
+            farmer["crop_name"],
+            buyer_crop
+        )
+
+        quantity_match = calculate_quantity_match(
+            float(farmer["quantity"]),
+            required_quantity
+        )
+
+        price_match = calculate_price_match(
+            float(farmer["expected_price"]),
+            buyer_price
+        )
+
+        quality_match = calculate_quality_match(
+            farmer["quality"] or "",
+            buyer_quality
+        )
+
+        location_match = calculate_location_match(
+            farmer["location"] or "",
+            buyer_location
+        )
+
+        score = calculate_match_score(
+            crop_match,
+            quantity_match,
+            price_match,
+            quality_match,
+            location_match
+        )
+
+        matches.append({
+            "produce_id": farmer["id"],
+            "farmer_id": farmer["farmer_id"],
+            "crop_name": farmer["crop_name"],
+            "available_quantity": float(farmer["quantity"]),
+            "unit": farmer["unit"],
+            "quality": farmer["quality"],
+            "expected_price": float(farmer["expected_price"]),
+            "location": farmer["location"],
+            "match_score": score
+        })
+
+    matches.sort(
+        key=lambda item: item["match_score"],
+        reverse=True
     )
-
-
-    # --------------------------------------------------------
-    # QUANTITY MATCH
-    # --------------------------------------------------------
-
-    quantity_match = calculate_quantity_match(
-        available_quantity,
-        required_quantity
-    )
-
-
-    # --------------------------------------------------------
-    # PRICE MATCH
-    # --------------------------------------------------------
-
-    price_match = calculate_price_match(
-        farmer_price,
-        buyer_price
-    )
-
-
-    # --------------------------------------------------------
-    # QUALITY MATCH
-    # --------------------------------------------------------
-
-    quality_match = calculate_quality_match(
-        farmer_quality,
-        buyer_quality
-    )
-
-
-    # --------------------------------------------------------
-    # LOCATION MATCH
-    # --------------------------------------------------------
-
-    location_match = calculate_location_match(
-        farmer_location,
-        buyer_location
-    )
-
-
-    # --------------------------------------------------------
-    # FINAL MATCH SCORE
-    # --------------------------------------------------------
-
-    score = calculate_match_score(
-        crop_match,
-        quantity_match,
-        price_match,
-        quality_match,
-        location_match
-    )
-
-
-    # --------------------------------------------------------
-    # RESPONSE
-    # --------------------------------------------------------
 
     return {
-        "match_score": score,
-
-        "crop_match": crop_match,
-
-        "quantity_match": quantity_match,
-
-        "price_match": price_match,
-
-        "quality_match": quality_match,
-
-        "location_match": location_match,
-
-        "rating": (
-            "Excellent"
-            if score >= 80
-            else "Good"
-            if score >= 60
-            else "Average"
-            if score >= 40
-            else "Low"
-        )
+        "buyer_crop": buyer_crop,
+        "required_quantity": required_quantity,
+        "buyer_price": buyer_price,
+        "matches": matches
     }
-
 
 # ============================================================
 # MEMBER 4 AI PRICE PREDICTION SERVICE
