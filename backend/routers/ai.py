@@ -2,14 +2,22 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-from services.ai_client import (
+from backend.services.ai_client import (
+
     AIServiceError,
+
     PricePredictionRequest,
+
     PricePredictionResponse,
+
     BuyerMatchingRequest,
+
     BuyerMatchingResponse,
+
     predict_price,
+
     match_buyers,
+
 )
 
 from database import get_connection

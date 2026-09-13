@@ -1,19 +1,21 @@
 import httpx
+
 from pydantic import BaseModel, ConfigDict, Field
 
-from config import AI_SERVICE_TIMEOUT_SECONDS, AI_SERVICE_URL
-
+from backend.config import AI_SERVICE_TIMEOUT_SECONDS, AI_SERVICE_URL
 
 # --------------------------------------------------
 # PRICE PREDICTION
 # --------------------------------------------------
 
 class PricePredictionRequest(BaseModel):
+    commodity: str
+    market: str
+    current_price: float = Field(gt=0)
     lag_1_price: float = Field(gt=0)
     rolling_7_day_average: float = Field(gt=0)
     month: int = Field(ge=1, le=12)
     day_of_week: int = Field(ge=0, le=6)
-    current_price: float = Field(gt=0)
 
 
 class PricePredictionResponse(BaseModel):
@@ -23,7 +25,7 @@ class PricePredictionResponse(BaseModel):
     expected_min_price: float
     expected_max_price: float
     suggested_minimum_price: float
-    confidence: float
+    confidence: str
     explanation: str
     selling_window: str
     disclaimer: str
@@ -58,7 +60,6 @@ def predict_price(
         raise AIServiceError(
             "AI price prediction service returned an invalid response"
         ) from error
-
 
 # --------------------------------------------------
 # BUYER MATCHING
