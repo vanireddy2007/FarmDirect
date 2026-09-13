@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .env
+ai-service/data/dataset/
+ai-service/models/improved_price_model.joblib
+ai-service/models/real_price_model.joblib
