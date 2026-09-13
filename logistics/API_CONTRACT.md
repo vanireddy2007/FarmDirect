@@ -1,7 +1,7 @@
-# Logistics Module — API Contract
+﻿# Logistics Module — API Contract
 
 **Owner:** Logistics (FPO Aggregation + Smart Logistics)
-**Service base URL:** _TBD — confirm host/port with the team before merging into the main API_CONTRACT.md_
+**Service base URL:** http://127.0.0.1:8002
 **Status:** All endpoints below are implemented and tested (18/18 tests passing) against real MySQL data.
 
 This document is the source of truth for how the backend and frontend should call the logistics service. Do not invent extra fields or guess response shapes — if something you need isn't listed here, ask the logistics owner before changing anything.
@@ -351,3 +351,5 @@ Returns a previously computed route (same shape as the Optimize Route response a
 - **Backend:** there is currently no call from the main backend (`:8000`) into this logistics service at all. If the main backend is meant to proxy these calls (rather than the frontend calling the logistics service directly), that needs to be decided and documented as an addition to this contract.
 - **All quantities are in kilograms (`_kg` suffix).** The frontend displays produce in Quintals (Qtl) — conversion must happen on the frontend or backend side; this service does not do unit conversion.
 - **Mixed crops in one aggregation batch are intentional** — do not add same-crop validation anywhere in the pipeline.
+
+
