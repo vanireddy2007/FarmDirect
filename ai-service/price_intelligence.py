@@ -1,18 +1,21 @@
-# Price Intelligence for FarmDirect
-
-from predictor import predict_price
+MODEL_MAE = 156.15
 
 
-def calculate_price_intelligence(predicted_price, mae):
+def calculate_price_intelligence(predicted_price):
     """
-    Creates an estimated price range using
-    the model's Mean Absolute Error (MAE).
+    Creates an estimated price range around the model prediction.
+
+    The range is a prototype estimate based on the model's
+    historical MAE. It is NOT a statistically calibrated
+    prediction interval.
     """
 
-    expected_min_price = predicted_price - mae
-    expected_max_price = predicted_price + mae
+    expected_min_price = max(0, predicted_price - MODEL_MAE)
+    expected_max_price = predicted_price + MODEL_MAE
 
-    suggested_minimum = predicted_price - (mae * 0.5)
+    # Conservative suggested minimum.
+    suggested_minimum = predicted_price - (MODEL_MAE * 0.5)
+    suggested_minimum = max(0, suggested_minimum)
 
     return {
         "expected_min_price": round(expected_min_price, 2),
@@ -21,63 +24,60 @@ def calculate_price_intelligence(predicted_price, mae):
     }
 
 
-def calculate_confidence(predicted_price, mae):
+def calculate_confidence(predicted_price):
     """
-    Estimates confidence based on model error.
+    Prototype confidence indicator based on
+    historical MAE relative to predicted price.
     """
 
-    error_percentage = (mae / predicted_price) * 100
+    error_percentage = (MODEL_MAE / predicted_price) * 100
 
     if error_percentage <= 5:
         return "High"
-
     elif error_percentage <= 10:
         return "Medium"
-
     else:
         return "Low"
 
 
-def generate_explanation(predicted_price, mae):
-    """
-    Generates a simple explanation for the farmer.
-    """
-
-    error_percentage = (mae / predicted_price) * 100
+def generate_explanation(predicted_price):
+    error_percentage = (MODEL_MAE / predicted_price) * 100
 
     if error_percentage <= 5:
-        reliability = "recent price trends are relatively consistent"
-
+        reliability = "historical price patterns are relatively consistent"
     elif error_percentage <= 10:
-        reliability = "there is some variation in recent price trends"
-
+        reliability = "there is moderate variation in historical price patterns"
     else:
-        reliability = "price variation is relatively high"
+        reliability = "historical price variation is relatively high"
 
     return (
-        f"The expected price is based on recent market-price patterns. "
-        f"The model's average prediction error is about "
-        f"{error_percentage:.1f}%, indicating that {reliability}."
+        f"The expected price is based on historical mandi price patterns. "
+        f"The model's historical average prediction error is approximately "
+        f"₹{MODEL_MAE:.2f} per quintal ({error_percentage:.1f}%), "
+        f"indicating that {reliability}."
     )
 
 
 def recommend_selling_window(current_price, predicted_price):
-    """
-    Gives a simple selling-window recommendation.
-    """
 
     difference_percentage = (
         (predicted_price - current_price) / current_price
     ) * 100
 
     if difference_percentage >= 5:
-        return "Consider waiting if storage and market conditions allow."
+        return (
+            "The expected price is higher than the current price. "
+            "Consider waiting if storage and market conditions allow."
+        )
 
     elif difference_percentage <= -5:
-        return "Consider selling now if the current offer is acceptable."
+        return (
+            "The expected price is lower than the current price. "
+            "Consider selling now if the current offer is acceptable."
+        )
 
     else:
         return (
-            "Current price is close to the expected price; "
-            "selling now is reasonable."
+            "The current price is close to the expected price. "
+            "Selling now may be reasonable if the offer is acceptable."
         )
