@@ -3,22 +3,22 @@ import os
 import httpx
 from dotenv import load_dotenv
 
-from database import get_connection
+from backend.database import get_connection
 
-from routers.auth import router as auth_router
-from routers.produce import router as produce_router
-from routers.orders import router as orders_router
-from routers.offers import router as offers_router
-from routers.aggregation import router as aggregation_router
-from routers.ai import router as ai_router, produce_router as ai_produce_router
+from backend.routers.auth import router as auth_router
+from backend.routers.produce import router as produce_router
+from backend.routers.orders import router as orders_router
+from backend.routers.offers import router as offers_router
+from backend.routers.aggregation import router as aggregation_router
+from backend.routers.ai import router as ai_router, produce_router as ai_produce_router
 
-from auth_dependency import get_current_user
+from backend.auth_dependency import get_current_user
 
-from ai.demand_prediction import predict_demand
-from ai.fair_price import recommend_fair_price
-from ai.smart_matching import calculate_match_score
+from backend.ai.demand_prediction import predict_demand
+from backend.ai.fair_price import recommend_fair_price
+from backend.ai.smart_matching import calculate_match_score
 
-from ai.matching_service import (
+from backend.ai.matching_service import (
     calculate_crop_match,
     calculate_quantity_match,
     calculate_price_match,
@@ -31,7 +31,7 @@ from ai.matching_service import (
 # ENVIRONMENT
 # ============================================================
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL")
 LANGUAGE_SERVICE_URL = os.getenv("LANGUAGE_SERVICE_URL")
@@ -421,6 +421,7 @@ def real_match(
     cursor = connection.cursor(dictionary=True)
 
     try:
+
         query = """
         SELECT
             id,
@@ -439,9 +440,11 @@ def real_match(
         """
 
         cursor.execute(query)
+
         farmers = cursor.fetchall()
 
     finally:
+
         cursor.close()
         connection.close()
 
@@ -506,69 +509,7 @@ def real_match(
         "matches": matches
     }
 
-# ============================================================
-# MEMBER 4 AI PRICE PREDICTION SERVICE
-# ============================================================
 
-@app.post("/ai/member4/predict-price")
-async def member4_predict_price(data: dict):
-
-    if not AI_SERVICE_URL:
-        raise HTTPException(
-            status_code=500,
-            detail="AI_SERVICE_URL is not configured"
-        )
-
-    required_fields = [
-        "lag_1_price",
-        "rolling_7_day_average",
-        "month",
-        "day_of_week",
-        "current_price"
-    ]
-
-    for field in required_fields:
-
-        if field not in data:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Missing field: {field}"
-            )
-
-    payload = {
-        "lag_1_price": data["lag_1_price"],
-        "rolling_7_day_average": data["rolling_7_day_average"],
-        "month": data["month"],
-        "day_of_week": data["day_of_week"],
-        "current_price": data["current_price"]
-    }
-
-    try:
-
-        async with httpx.AsyncClient(
-            timeout=30.0
-        ) as client:
-
-            response = await client.post(
-                f"{AI_SERVICE_URL}/predict-price",
-                json=payload
-            )
-
-        if response.status_code != 200:
-
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=response.text
-            )
-
-        return response.json()
-
-    except httpx.RequestError as e:
-
-        raise HTTPException(
-            status_code=503,
-            detail=f"AI service unavailable: {str(e)}"
-        )
 # ============================================================
 # LANGUAGE SERVICE - TRANSLATION
 # ============================================================
@@ -628,4 +569,3 @@ async def language_translate(data: dict):
             status_code=503,
             detail=f"Language service unavailable: {str(e)}"
         )
-        

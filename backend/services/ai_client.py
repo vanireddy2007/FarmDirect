@@ -12,10 +12,7 @@ class PricePredictionRequest(BaseModel):
     commodity: str
     market: str
     current_price: float = Field(gt=0)
-    lag_1_price: float = Field(gt=0)
-    rolling_7_day_average: float = Field(gt=0)
-    month: int = Field(ge=1, le=12)
-    day_of_week: int = Field(ge=0, le=6)
+    
 
 
 class PricePredictionResponse(BaseModel):
